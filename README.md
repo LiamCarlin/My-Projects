@@ -1,5 +1,3 @@
-Here’s a clear and concise README for a general repository where you store your random projects:
-
 Liam’s Project Repository
 
 Welcome to my general repository! This is a collection of all my random projects, experiments, and ideas that I’ve worked on over time. It serves as a hub for everything from small prototypes to more developed projects. Each folder represents a unique idea or initiative, spanning various topics and technologies.
