@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#11161a">
+<title>Signal Walk</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: full-bleed map, one instrument sheet pinned to the bottom edge */
+:root{
+  --bg:#f3f5f4; --panel:#ffffffee; --fg:#14201b; --muted:#5b6a64; --line:#d5ddd9; --accent:#0f7a5a;
+  --q1:#1a9850; --q2:#91cf60; --q3:#fee08b; --q4:#fc8d59; --q5:#d73027; --dead:#3b1f4f;
+  --display:"Barlow Semi Condensed",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#11161a; --panel:#161d22ee; --fg:#e7eeea; --muted:#8fa29a; --line:#2a353b; --accent:#3fd09c; --dead:#b48ad6; color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.35 var(--display);overflow:hidden}
+#map{position:fixed;inset:0;background:var(--bg)}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:1000;background:var(--panel);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border-top:1px solid var(--line);padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));display:grid;gap:10px}
+.top{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:16px;right:16px;z-index:1000;display:flex;justify-content:space-between;gap:8px;pointer-events:none}
+.chip{pointer-events:auto;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.rec .dot{background:var(--q5);animation:blink 1.2s infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.rec .dot{animation:none}}
+.readout{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.big{font:600 44px/1 var(--mono);font-variant-numeric:tabular-nums}
+.big small{font-size:16px;color:var(--muted);margin-left:2px}
+.verdict{font-weight:700;font-size:18px;text-transform:uppercase;letter-spacing:.06em}
+.meta{font:500 12px/1.4 var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.stat{min-width:0}
+.stat b{display:block;font:600 16px var(--mono);font-variant-numeric:tabular-nums}
+.stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.scale{display:flex;height:8px;border-radius:4px;overflow:hidden}
+.scale i{flex:1}
+.scale-l{display:flex;justify-content:space-between;font:500 10px var(--mono);color:var(--muted)}
+.btns{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px}
+button{font:700 14px var(--display);letter-spacing:.05em;text-transform:uppercase;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);padding:12px 6px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.more{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.more button{padding:9px 4px;font-size:12px}
+.warn{font-size:13px;color:var(--q5)}
+.confirm{display:flex;gap:8px;align-items:center;font-size:14px}
+.confirm button{padding:8px 12px}
+.leaflet-popup-content{font:500 13px/1.5 var(--mono)}
+.leaflet-container{font-family:var(--display)}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="top">
+  <div class="chip" id="status"><span class="dot"></span><span id="statusText">Ready</span></div>
+  <div class="chip" id="gps">GPS —</div>
+</div>
+
+<div class="sheet">
+  <div class="readout">
+    <div class="big" id="ping">—<small>ms</small></div>
+    <div>
+      <div class="verdict" id="verdict">Tap Start</div>
+      <div class="meta" id="net">Network info pending</div>
+    </div>
+  </div>
+  <div>
+    <div class="scale"><i style="background:var(--q1)"></i><i style="background:var(--q2)"></i><i style="background:var(--q3)"></i><i style="background:var(--q4)"></i><i style="background:var(--q5)"></i><i style="background:var(--dead)"></i></div>
+    <div class="scale-l"><span>&lt;80</span><span>150</span><span>300</span><span>600</span><span>1000+ms</span><span>no data</span></div>
+  </div>
+  <div class="stats">
+    <div class="stat"><b id="sN">0</b><span>Samples</span></div>
+    <div class="stat"><b id="sC">0</b><span>Cells</span></div>
+    <div class="stat"><b id="sB">—</b><span>Best</span></div>
+    <div class="stat"><b id="sW">—</b><span>Worst</span></div>
+  </div>
+  <div id="warn" class="warn" hidden></div>
+  <div class="btns">
+    <button class="primary" id="go">Start</button>
+    <button id="center">Me</button>
+    <button id="best">Best</button>
+    <button id="cell">25 m</button>
+  </div>
+  <div class="more" id="more">
+    <button id="exp">Export CSV</button>
+    <button id="fit">Fit area</button>
+    <button id="clr">Clear</button>
+  </div>
+  <div class="confirm" id="confirm" hidden>Delete all samples?<button id="yes">Delete</button><button id="no">Keep</button></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const KEY = 'signalwalk.v1';
+let samples = [];
+try { samples = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(samples)); } catch (e) {} };
+
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+const map = L.map('map', { zoomControl: false, attributionControl: true }).setView([42.293, -71.264], 16);
+L.tileLayer(`https://{s}.basemaps.cartocdn.com/${dark ? 'dark_all' : 'light_all'}/{z}/{x}/{y}{r}.png`, {
+  maxZoom: 20, attribution: '&copy; OpenStreetMap &copy; CARTO'
+}).addTo(map);
+
+const css = getComputedStyle(document.documentElement);
+const C = ['--q1','--q2','--q3','--q4','--q5','--dead'].map(v => css.getPropertyValue(v).trim());
+const cuts = [80, 150, 300, 600, 1000];
+function colorFor(ms, loss) {
+  if (ms == null || loss >= 0.67) return C[5];
+  let i = cuts.findIndex(c => ms < c); if (i < 0) i = 4;
+  if (loss > 0.2) i = Math.min(4, i + 1);
+  return C[i];
+}
+function verdictFor(ms, loss) {
+  if (ms == null || loss >= 0.67) return 'Dead zone';
+  if (loss > 0.2) return 'Dropping packets';
+  return ms < 80 ? 'Excellent' : ms < 150 ? 'Good' : ms < 300 ? 'Fair' : ms < 600 ? 'Poor' : 'Very poor';
+}
+
+// ---- grid ----
+let cellM = 25;
+const layer = L.layerGroup().addTo(map);
+function cellKey(lat, lng) {
+  const dLat = cellM / 111320, dLng = cellM / (111320 * Math.cos(lat * Math.PI / 180));
+  // anchor longitude spacing to a fixed reference latitude so cells tile cleanly
+  const ref = samples.length ? samples[0].lat : lat;
+  const dLngR = cellM / (111320 * Math.cos(ref * Math.PI / 180));
+  return [Math.floor(lat / dLat), Math.floor(lng / dLngR), dLat, dLngR];
+}
+const median = a => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length ? (s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) : null; };
+let cells = new Map();
+function rebuild() {
+  cells = new Map();
+  for (const s of samples) {
+    const [a, b, dLat, dLng] = cellKey(s.lat, s.lng), k = a + ':' + b;
+    if (!cells.has(k)) cells.set(k, { a, b, dLat, dLng, pings: [], tries: 0, fails: 0, n: 0 });
+    const c = cells.get(k); c.n++; c.tries += s.tries; c.fails += s.fails;
+    if (s.ms != null) c.pings.push(s.ms);
+  }
+  layer.clearLayers();
+  let best = null, worst = null;
+  for (const c of cells.values()) {
+    c.med = median(c.pings); c.loss = c.tries ? c.fails / c.tries : 1;
+    const col = colorFor(c.med, c.loss);
+    const r = L.rectangle([[c.a * c.dLat, c.b * c.dLng], [(c.a + 1) * c.dLat, (c.b + 1) * c.dLng]],
+      { stroke: false, fillColor: col, fillOpacity: 0.62 });
+    r.bindPopup(`${verdictFor(c.med, c.loss)}<br>median ${c.med == null ? '—' : Math.round(c.med) + ' ms'}<br>loss ${Math.round(c.loss * 100)}%<br>${c.n} samples`);
+    layer.addLayer(r);
+    const score = c.med == null || c.loss >= .67 ? 1e6 : c.med * (1 + 2 * c.loss);
+    c.score = score;
+    if (c.n >= 2 && (!best || score < best.score)) best = c;
+    if (!worst || score > worst.score) worst = c;
+  }
+  $('sN').textContent = samples.length;
+  $('sC').textContent = cells.size;
+  $('sB').textContent = best ? (best.med == null ? '—' : Math.round(best.med) + 'ms') : '—';
+  $('sW').textContent = worst ? (worst.score >= 1e6 ? 'dead' : Math.round(worst.med) + 'ms') : '—';
+  bestCell = best;
+}
+let bestCell = null;
+
+// ---- position ----
+let pos = null, me = null, meAcc = null, watchId = null, firstFix = true;
+function startGPS() {
+  if (!('geolocation' in navigator)) return warn('This browser has no GPS access.');
+  watchId = navigator.geolocation.watchPosition(p => {
+    pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() };
+    $('gps').textContent = `GPS ±${Math.round(pos.acc)} m`;
+    const ll = [pos.lat, pos.lng];
+    if (!me) {
+      meAcc = L.circle(ll, { radius: pos.acc, color: C[0], weight: 1, fillOpacity: .08 }).addTo(map);
+      me = L.circleMarker(ll, { radius: 7, color: '#fff', weight: 2, fillColor: '#1d6fe0', fillOpacity: 1 }).addTo(map);
+    } else { me.setLatLng(ll); meAcc.setLatLng(ll).setRadius(pos.acc); }
+    if (firstFix) { map.setView(ll, 17); firstFix = false; }
+  }, e => warn(e.code === 1 ? 'Location permission denied. Allow location for this site in your browser settings, then reload.' : 'Waiting for a GPS fix…'),
+  { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+}
+
+// ---- ping ----
+// Tiny 204 responses from anycast edges: timing reflects your radio link, not a slow server
+const TARGETS = ['https://www.google.com/generate_204', 'https://www.gstatic.com/generate_204'];
+let tIdx = 0;
+async function ping1() {
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 3000), t0 = performance.now();
+  const url = TARGETS[tIdx++ % TARGETS.length];
+  try {
+    await fetch(url + '?r=' + Math.random().toString(36).slice(2), { mode: 'no-cors', cache: 'no-store', signal: ctl.signal });
+    return performance.now() - t0;
+  } catch (e) { return null; } finally { clearTimeout(to); }
+}
+function netInfo() {
+  const c = navigator.connection;
+  if (!c) return { txt: navigator.onLine ? 'Online · carrier stats not exposed by this browser' : 'Offline' };
+  return { type: c.effectiveType, rtt: c.rtt, dl: c.downlink,
+    txt: `${(c.type || 'cell').toUpperCase()} · ${c.effectiveType || '?'} · rtt ${c.rtt ?? '?'}ms · ${c.downlink ?? '?'} Mb/s` };
+}
+
+let running = false, loopTimer = null, wake = null;
+async function tick() {
+  if (!running) return;
+  const t0 = Date.now();
+  const res = [];
+  for (let i = 0; i < 3; i++) res.push(await ping1());
+  const ok = res.filter(x => x != null), ms = ok.length ? median(ok) : null, fails = 3 - ok.length;
+  const n = netInfo();
+  $('ping').innerHTML = (ms == null ? '—' : Math.round(ms)) + '<small>ms</small>';
+  $('ping').style.color = colorFor(ms, fails / 3);
+  $('verdict').textContent = verdictFor(ms, fails / 3);
+  $('net').textContent = n.txt;
+  if (pos && Date.now() - pos.t < 10000 && pos.acc <= 40) {
+    samples.push({ t: Date.now(), lat: pos.lat, lng: pos.lng, acc: Math.round(pos.acc), ms: ms == null ? null : Math.round(ms), tries: 3, fails, et: n.type || '', rtt: n.rtt ?? '', dl: n.dl ?? '' });
+    save(); rebuild(); hideWarn();
+  } else if (pos) warn(`GPS too loose (±${Math.round(pos.acc)} m) — sample skipped. Step into the open for a better fix.`);
+  loopTimer = setTimeout(tick, Math.max(0, 2000 - (Date.now() - t0)));
+}
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') keepAwake(); });
+
+function setRunning(on) {
+  running = on;
+  $('go').textContent = on ? 'Pause' : (samples.length ? 'Resume' : 'Start');
+  $('status').classList.toggle('rec', on);
+  $('statusText').textContent = on ? 'Recording' : 'Paused';
+  if (on) { if (watchId == null) startGPS(); keepAwake(); tick(); }
+  else { clearTimeout(loopTimer); try { wake && wake.release(); } catch (e) {} }
+}
+function warn(m) { $('warn').textContent = m; $('warn').hidden = false; }
+function hideWarn() { $('warn').hidden = true; }
+
+$('go').onclick = () => setRunning(!running);
+$('center').onclick = () => { if (pos) map.setView([pos.lat, pos.lng], Math.max(map.getZoom(), 17)); else if (watchId == null) startGPS(); };
+$('best').onclick = () => { if (bestCell) map.setView([(bestCell.a + .5) * bestCell.dLat, (bestCell.b + .5) * bestCell.dLng], 19); };
+$('fit').onclick = () => { if (samples.length) map.fitBounds(samples.map(s => [s.lat, s.lng]), { padding: [30, 30] }); };
+const sizes = [10, 25, 50];
+$('cell').onclick = () => { cellM = sizes[(sizes.indexOf(cellM) + 1) % sizes.length]; $('cell').textContent = cellM + ' m'; rebuild(); };
+$('exp').onclick = async () => {
+  const rows = ['time,lat,lng,gps_acc_m,ping_ms,ping_fails_of_3,effective_type,browser_rtt_ms,downlink_mbps',
+    ...samples.map(s => [new Date(s.t).toISOString(), s.lat, s.lng, s.acc, s.ms ?? '', s.fails, s.et, s.rtt, s.dl].join(','))].join('\n');
+  const file = new File([rows], `signal-walk-${new Date().toISOString().slice(0, 16).replace(':', '')}.csv`, { type: 'text/csv' });
+  try { if (navigator.canShare && navigator.canShare({ files: [file] })) return await navigator.share({ files: [file] }); } catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+};
+$('clr').onclick = () => { $('confirm').hidden = false; $('more').hidden = true; };
+$('no').onclick = () => { $('confirm').hidden = true; $('more').hidden = false; };
+$('yes').onclick = () => { samples = []; save(); rebuild(); $('no').onclick(); if (!running) $('go').textContent = 'Start'; };
+
+rebuild();
+if (samples.length) { $('go').textContent = 'Resume'; $('fit').onclick(); }
+</script>
+</body>
+</html>
